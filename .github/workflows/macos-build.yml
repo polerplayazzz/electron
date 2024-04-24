@@ -1,21 +1,39 @@
 name: Build MacOS
 
 on:
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      IS_RELEASE:
+        required: true
+        type: boolean
+        default: false
+      GN_CONFIG:
+        required: false
+        type: string
+        default: false//electron/build/args/testing.gn
+      GN_BUILD_TYPE:
+        required: false
+        type: string
+        default: testing
+      GENERATE_SYMBOLS: 
+        required: false
+        type: boolean
+        default: false
+      UPLOAD_TO_STORAGE: 
+        required: false
+        type: string
+        default: '0'
+      
 
 env:
-  GCLIENT_EXTRA_ARGS: '--custom-var=checkout_mac=True --custom-var=host_os=mac --custom-var=host_cpu=arm64'
-  IS_RELEASE: false
-  # GENERATE_SYMBOLS: true only on release builds
-  GENERATE_SYMBOLS: false
   AZURE_STORAGE_ACCOUNT: ${{ secrets.AZURE_STORAGE_ACCOUNT }}
   AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
   AZURE_STORAGE_CONTAINER_NAME: ${{ secrets.AZURE_STORAGE_CONTAINER_NAME }}
   ELECTRON_RBE_JWT: ${{ secrets.ELECTRON_RBE_JWT }}
-  # TODO: this should be set to the correct GN_CONFIG for the build type.
-  GN_CONFIG: //electron/build/args/testing.gn
   # Disable pre-compiled headers to reduce out size - only useful for rebuilds
   GN_BUILDFLAG_ARGS: 'enable_precompiled_headers = false'
+  GCLIENT_EXTRA_ARGS: '--custom-var=checkout_mac=True --custom-var=host_os=mac --custom-var=host_cpu=arm64'
+  CHECK_DIST_MANIFEST: '1'
 
 jobs:
   checkout:
@@ -91,7 +109,7 @@ jobs:
           "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
 
         ELECTRON_USE_THREE_WAY_MERGE_FOR_PATCHES=1 gclient sync --with_branch_heads --with_tags -vvvvv
-        if [ "$IS_RELEASE" != "true" ]; then
+        if [ ${{ inputs.IS_RELEASE }} != "true" ]; then
           # Re-export all the patches to check if there were changes.
           python3 src/electron/script/export_all_patches.py src/electron/patches/config.json
           cd src/electron
@@ -168,7 +186,7 @@ jobs:
     - name: Load Build Tools
       run: |
         yarn add git://github.com/electron/build-tools.git#2bb63e2e7877491b52f972532b52adc979a6ec2f
-        e init --root=$(pwd) --out=Default testing
+        e init --root=$(pwd) --out=Default ${{ inputs.GN_BUILD_TYPE }}
     - name: Checkout Electron
       uses: actions/checkout@v4
       with:
@@ -331,10 +349,16 @@ jobs:
         NINJA_SUMMARIZE_BUILD=1 e build -j $NUMBER_OF_NINJA_PROCESSES
         cp out/Default/.ninja_log out/electron_ninja_log
         node electron/script/check-symlinks.js
+    # TODO(vertdinde): this step doesn't happen on MAS
+    # - name: Build Electron Node Headers (darwin)
+    #   run: |
+    #     cd src
+    #     autoninja -C out/Default third_party/electron_node:overlapped-checker -j $NUMBER_OF_NINJA_PROCESSES
+    # Additional Targets: shell_browser_ui_unittests third_party/electron_node:headers third_party/electron_node:overlapped-checker electron:hunspell_dictionaries_zip
     - name: Build Electron dist.zip (darwin)
       run: |
         cd src
-        e build electron:electron_dist_zip $ADDITIONAL_TARGETS -j $NUMBER_OF_NINJA_PROCESSES
+        e build electron:electron_dist_zip -j $NUMBER_OF_NINJA_PROCESSES
         if [ "$CHECK_DIST_MANIFEST" == "1" ]; then
           target_os=mac
           target_cpu=arm64
@@ -350,32 +374,62 @@ jobs:
         sed $SEDOPTION '/.*builtins-pgo/d' out/Default/mksnapshot_args
         sed $SEDOPTION '/--turbo-profiling-input/d' out/Default/mksnapshot_args
         sed $SEDOPTION '/The gn arg use_goma=true .*/d' out/Default/mksnapshot_args
-        if [ "$SKIP_DIST_ZIP" != "1" ]; then
-          e build electron:electron_mksnapshot_zip -j $NUMBER_OF_NINJA_PROCESSES
-          (cd out/Default; zip mksnapshot.zip mksnapshot_args gen/v8/embedded.S)
-        fi
+        e build electron:electron_mksnapshot_zip -j $NUMBER_OF_NINJA_PROCESSES
+        (cd out/Default; zip mksnapshot.zip mksnapshot_args gen/v8/embedded.S)
     - name: Build Chromedriver (darwin)
       run: |
         cd src
         e build electron:electron_chromedriver -j $NUMBER_OF_NINJA_PROCESSES
         e build electron:electron_chromedriver_zip
-    - name: Build Node Headers (darwin)
-      run: |
-        cd src
-        e build electron:node_headers
+    # NOTE (vertedinde): We strip binaries/symbols on the Linux job, not the Mac job
     - name: Generate & Zip Symbols (darwin)
       run: |
-        if [ "$GENERATE_SYMBOLS" == "true" ]; then
+        # Generate breakpad symbols on release builds
+        if [ ${{ inputs.GENERATE_SYMBOLS }} == "true" ]; then
           e build electron:electron_symbols
         fi
         cd src
         export BUILD_PATH="$(pwd)/out/Default"
         e build electron:licenses
         e build electron:electron_version_file
-        electron/script/zip-symbols.py -b $BUILD_PATH
-      # TODO(vertedinde): handle creating ffmpeg and hunspell for release builds
-      # The current generated_artifacts_<< artifact.key >> name was taken from CircleCI
-      # tp ensure we don't break anything, but we may be able to improve that.
+        if [ ${{ inputs.IS_RELEASE }} == "true" ]; then
+          DELETE_DSYMS_AFTER_ZIP=1 electron/script/zip-symbols.py -b $BUILD_PATH
+        else
+          electron/script/zip-symbols.py -b $BUILD_PATH
+        fi
+    - name: Generate FFMpeg
+      run: |
+        if [ ${{ inputs.IS_RELEASE }} == "true" ]; then
+          cd src
+          gn gen out/ffmpeg --args="import(\"//electron/build/args/ffmpeg.gn\") use_remoteexec=true $GN_EXTRA_ARGS"
+          autoninja -C out/ffmpeg electron:electron_ffmpeg_zip -j $NUMBER_OF_NINJA_PROCESSES
+        fi
+    - name: Generate Hunspell Dictionaries
+      run: |
+        if [ ${{ inputs.IS_RELEASE }} == "true" ]; then
+          cd src
+          autoninja -C out/Default electron:hunspell_dictionaries_zip -j $NUMBER_OF_NINJA_PROCESSES
+        fi
+    - name: Generate TypeScript Definitions
+      run: |
+        if [ ${{ inputs.IS_RELEASE }} == "true" ]; then
+          cd src/electron
+          node script/yarn create-typescript-definitions
+        fi
+    # TODO(vertedinde): These uploads currently point to a different Azure bucket & GitHub Repo
+    - name: Publish Electron Dist
+      run: |
+        rm -rf src/out/Default/obj
+        cd src/electron
+        if [ ${{ inputs.UPLOAD_TO_STORAGE }} == "1" ]; then
+          echo 'Uploading Electron release distribution to Azure'
+          # script/release/uploaders/upload.py --verbose --upload_to_storage
+        else
+          echo 'Uploading Electron release distribution to GitHub releases'
+          # script/release/uploaders/upload.py --verbose
+        fi
+    # The current generated_artifacts_<< artifact.key >> name was taken from CircleCI
+    # to ensure we don't break anything, but we may be able to improve that.
     - name: Move all Generated Artifacts to Upload Folder
       run: ./src/electron/script/actions/move-artifacts.sh
     - name: Upload Generated Artifacts
@@ -423,10 +477,11 @@ jobs:
         NINJA_SUMMARIZE_BUILD=1 e build -j $NUMBER_OF_NINJA_PROCESSES
         cp out/Default/.ninja_log out/electron_ninja_log
         node electron/script/check-symlinks.js
+    # Additional Targets: shell_browser_ui_unittests third_party/electron_node:headers third_party/electron_node:overlapped-checker electron:hunspell_dictionaries_zip
     - name: Build Electron dist.zip (mas)
       run: |
         cd src
-        e build electron:electron_dist_zip $ADDITIONAL_TARGETS -j $NUMBER_OF_NINJA_PROCESSES
+        e build electron:electron_dist_zip -j $NUMBER_OF_NINJA_PROCESSES
         if [ "$CHECK_DIST_MANIFEST" == "1" ]; then
           target_os=mac_mas
           target_cpu=arm64
@@ -442,10 +497,8 @@ jobs:
         sed $SEDOPTION '/.*builtins-pgo/d' out/Default/mksnapshot_args
         sed $SEDOPTION '/--turbo-profiling-input/d' out/Default/mksnapshot_args
         sed $SEDOPTION '/The gn arg use_goma=true .*/d' out/Default/mksnapshot_args
-        if [ "$SKIP_DIST_ZIP" != "1" ]; then
-          e build electron:electron_mksnapshot_zip -j $NUMBER_OF_NINJA_PROCESSES
-          (cd out/Default; zip mksnapshot.zip mksnapshot_args gen/v8/embedded.S)
-        fi
+        e build electron:electron_mksnapshot_zip -j $NUMBER_OF_NINJA_PROCESSES
+        (cd out/Default; zip mksnapshot.zip mksnapshot_args gen/v8/embedded.S)
     - name: Build Chromedriver (mas)
       run: |
         cd src
@@ -457,14 +510,18 @@ jobs:
         e build electron:node_headers
     - name: Generate & Zip Symbols (mas)
       run: |
-        if [ "$GENERATE_SYMBOLS" == "true" ]; then
+        if [ ${{ inputs.GENERATE_SYMBOLS }}  == "true" ]; then
           e build electron:electron_symbols
         fi
         cd src
         export BUILD_PATH="$(pwd)/out/Default"
         e build electron:licenses
         e build electron:electron_version_file
-        electron/script/zip-symbols.py -b $BUILD_PATH
+        if [ ${{ inputs.IS_RELEASE }} == "true" ]; then
+          DELETE_DSYMS_AFTER_ZIP=1 electron/script/zip-symbols.py -b $BUILD_PATH
+        else
+          electron/script/zip-symbols.py -b $BUILD_PATH
+        fi
     - name: Move all Generated Artifacts to Upload Folder (mas)
       run: ./src/electron/script/actions/move-artifacts.sh
     - name: Upload Generated Artifacts
@@ -493,6 +550,7 @@ jobs:
           src/v8/tools/builtins-pgo
         key: ${{ runner.os }}-build-artifacts-mas-${{ github.sha }}
   test:
+    if: ${{ inputs.IS_RELEASE == false }}
     runs-on: macos-13-xlarge
     needs: build
     strategy:
@@ -505,7 +563,7 @@ jobs:
     - name: Load Build Tools
       run: |
         yarn add git://github.com/electron/build-tools.git#2bb63e2e7877491b52f972532b52adc979a6ec2f
-        e init --root=$(pwd) --out=Default testing
+        e init --root=$(pwd) --out=Default ${{ inputs.GN_BUILD_TYPE }}
     - name: Checkout Electron
       uses: actions/checkout@v4
       with:
@@ -571,6 +629,11 @@ jobs:
         unzip -:o dist.zip
         unzip -:o chromedriver.zip
         unzip -:o mksnapshot.zip
+    - name: Import & Trust Self-Signed Codesigning Cert on MacOS
+      run: |
+        sudo security authorizationdb write com.apple.trust-settings.admin allow
+        cd src/electron
+        ./script/codesign/generate-identity.sh
     - name: Run Electron Tests
       env:
         MOCHA_REPORTER: mocha-multi-reporters
