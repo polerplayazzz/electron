@@ -44,12 +44,12 @@ jobs:
       with:
         path: src/electron
     - name: Install Azure CLI
-      run: ./script/azure_cli_deb_install.sh
+      run: sudo bash ./src/electron/script/azure_cli_deb_install.sh
     - name: Set GIT_CACHE_PATH to make gclient to use the cache
       run: |
         echo "GIT_CACHE_PATH=$(pwd)/git-cache" >> $GITHUB_ENV
     - name: Setup Node.js/npm
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8
       with:
         node-version: 20.11.x
         cache: yarn
@@ -180,12 +180,17 @@ jobs:
           --name $DEPSHASH \
           --debug
   build:
-    runs-on: macos-13-xlarge
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [macos-13-large, macos-14-xlarge]
+    runs-on: ${{ matrix.arch }}
     needs: checkout
     steps:
     - name: Load Build Tools
       run: |
-        yarn add git://github.com/electron/build-tools.git#2bb63e2e7877491b52f972532b52adc979a6ec2f
+        export BUILD_TOOLS_SHA=2bb63e2e7877491b52f972532b52adc979a6ec2f
+        npm i -g @electron/build-tools
         e init --root=$(pwd) --out=Default ${{ inputs.GN_BUILD_TYPE }}
     - name: Checkout Electron
       uses: actions/checkout@v4
@@ -416,18 +421,6 @@ jobs:
           cd src/electron
           node script/yarn create-typescript-definitions
         fi
-    # TODO(vertedinde): These uploads currently point to a different Azure bucket & GitHub Repo
-    - name: Publish Electron Dist
-      run: |
-        rm -rf src/out/Default/obj
-        cd src/electron
-        if [ ${{ inputs.UPLOAD_TO_STORAGE }} == "1" ]; then
-          echo 'Uploading Electron release distribution to Azure'
-          script/release/uploaders/upload.py --verbose --upload_to_storage
-        else
-          echo 'Uploading Electron release distribution to GitHub releases'
-          script/release/uploaders/upload.py --verbose
-        fi
     # The current generated_artifacts_<< artifact.key >> name was taken from CircleCI
     # to ensure we don't break anything, but we may be able to improve that.
     - name: Move all Generated Artifacts to Upload Folder
@@ -435,8 +428,8 @@ jobs:
     - name: Upload Generated Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: generated_artifacts_darwin
-        path: ./generated_artifacts_darwin
+        name: generated_artifacts_darwin_${{ matrix.arch }}
+        path: ./generated_artifacts_darwin_${{ matrix.arch }}
     - name: Persist Build Artifacts
       uses: actions/cache/save@v4
       with:
@@ -456,7 +449,7 @@ jobs:
           src/third_party/libc++abi
           src/out/Default/obj/buildtools/third_party
           src/v8/tools/builtins-pgo
-        key: ${{ runner.os }}-build-artifacts-darwin-${{ github.sha }}
+        key: ${{ runner.os }}-build-artifacts-darwin-${{ matrix.arch }}-${{ github.sha }}
     - name: Create MAS Config
       run: |
         mv src/electron/.github/workflows/config/evm.mas.json $HOME/.electron_build_tools/configs/evm.mas.json
@@ -527,14 +520,16 @@ jobs:
     - name: Upload Generated Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: generated_artifacts_mas
-        path: ./generated_artifacts_mas
+        name: generated_artifacts_mas_${{ matrix.arch }}
+        path: ./generated_artifacts_mas_${{ matrix.arch }}
     - name: Persist Build Artifacts
       uses: actions/cache/save@v4
       with:
         path: |
           src/out/Default/gen/node_headers
           src/out/Default/overlapped-checker
+          src/out/Default/ffmpeg
+          src/out/Default/hunspell_dictionaries
           src/electron
           src/third_party/electron_node
           src/third_party/nan
@@ -548,7 +543,72 @@ jobs:
           src/third_party/libc++abi
           src/out/Default/obj/buildtools/third_party
           src/v8/tools/builtins-pgo
-        key: ${{ runner.os }}-build-artifacts-mas-${{ github.sha }}
+        key: ${{ runner.os }}-build-artifacts-mas-${{ matrix.arch }}-${{ github.sha }}
+  upload:
+    runs-on: LargeLinuxRunner
+    if: ${{ inputs.IS_RELEASE == true }}
+    needs: build
+    steps:
+    - name: Load Build Tools
+      run: |
+        export BUILD_TOOLS_SHA=2bb63e2e7877491b52f972532b52adc979a6ec2f
+        npm i -g @electron/build-tools
+        e init --root=$(pwd) --out=Default ${{ inputs.GN_BUILD_TYPE }}
+    - name: Checkout Electron
+      uses: actions/checkout@v4
+      with:
+        path: src/electron
+    - name: Setup Node.js/npm
+      uses: actions/setup-node@v3
+      with:
+        node-version: 20.11.x
+        cache: yarn
+        cache-dependency-path: src/electron/yarn.lock
+    - name: Install Dependencies
+      run: |
+        cd src/electron
+        node script/yarn install
+    - name: Download Generated Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: generated_artifacts_darwin_${{ matrix.arch }}
+        path: ./generated_artifacts_darwin_${{ matrix.arch }}
+    - name: Restore Persisted Build Artifacts
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          src/out/Default/gen/node_headers
+          src/out/Default/overlapped-checker
+          src/out/Default/ffmpeg
+          src/out/Default/hunspell_dictionaries
+          src/electron
+          src/third_party/electron_node
+          src/third_party/nan
+          src/cross-arch-snapshots
+          src/third_party/llvm-build
+          src/build/linux
+          src/buildtools/mac
+          src/buildtools/third_party/libc++
+          src/buildtools/third_party/libc++abi
+          src/third_party/libc++
+          src/third_party/libc++abi
+          src/out/Default/obj/buildtools/third_party
+          src/v8/tools/builtins-pgo
+        key: ${{ runner.os }}-build-artifacts-darwin-${{ matrix.arch }}-${{ github.sha }}
+    - name: Restore Generated Artifacts
+      run: ./src/electron/script/actions/restore-artifacts.sh
+    # TODO(vertedinde): These uploads currently point to a different Azure bucket & GitHub Repo
+    - name: Publish Electron Dist
+      run: |
+        rm -rf src/out/Default/obj
+        cd src/electron
+        if [ ${{ inputs.UPLOAD_TO_STORAGE }} == "1" ]; then
+          echo 'Uploading Electron release distribution to Azure'
+          # script/release/uploaders/upload.py --verbose --upload_to_storage
+        else
+          echo 'Uploading Electron release distribution to GitHub releases'
+          # script/release/uploaders/upload.py --verbose
+        fi
   test:
     if: ${{ inputs.IS_RELEASE == false }}
     runs-on: macos-13-xlarge

@@ -20,7 +20,7 @@ on:
 
 jobs:
   publish:
-    uses: electron/electron/.github/workflows/macos-build.yml@gh-macos-publish
+    uses: electron/electron/.github/workflows/macos-build.yml@gh-actions-mac-publish
     with:
       IS_RELEASE: true
       GN_CONFIG: //electron/build/args/release.gn
