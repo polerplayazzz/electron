@@ -78,7 +78,8 @@ new Promise((resolve, reject) => {
 
     return octokit.repos.listReleases({
       owner: 'electron',
-      repo: isNightlyElectronVersion ? 'nightlies' : 'electron'
+      // repo: isNightlyElectronVersion ? 'nightlies' : 'electron'
+      repo: 'test-releases'
     });
   })
   .then((releases) => {
@@ -98,7 +99,8 @@ new Promise((resolve, reject) => {
     }
 
     const typingsContent = await getAssetContents(
-      isNightlyElectronVersion ? 'nightlies' : 'electron',
+      'test-releases',
+      // isNightlyElectronVersion ? 'nightlies' : 'electron',
       tsdAsset.id
     );
 
@@ -113,7 +115,8 @@ new Promise((resolve, reject) => {
     }
 
     const checksumsContent = await getAssetContents(
-      isNightlyElectronVersion ? 'nightlies' : 'electron',
+      'test-releases',
+      // isNightlyElectronVersion ? 'nightlies' : 'electron',
       checksumsAsset.id
     );
 

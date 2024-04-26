@@ -180,11 +180,12 @@ jobs:
           --name $DEPSHASH \
           --debug
   build:
-    strategy:
-      fail-fast: true
-      matrix:
-        arch: [macos-13-large, macos-14-xlarge]
-    runs-on: ${{ matrix.arch }}
+    # strategy:
+    #   fail-fast: true
+    #   matrix:
+    #     arch: [macos-13-large, macos-14-xlarge]
+    # runs-on: ${{ matrix.arch }}
+    runs-on: macos-14-xlarge
     needs: checkout
     steps:
     - name: Load Build Tools

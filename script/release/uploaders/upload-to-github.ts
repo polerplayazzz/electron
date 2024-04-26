@@ -44,7 +44,7 @@ const getHeaders = (filePath: string, fileName: string) => {
   };
 };
 
-const targetRepo = releaseVersion.indexOf('nightly') > 0 ? 'nightlies' : 'electron';
+const targetRepo = isGHActions ? 'test-releases' : releaseVersion.indexOf('nightly') > 0 ? 'nightlies' : 'electron';
 const uploadDefaultUrl = `https://uploads.github.com/repos/electron/${targetRepo}/releases/${releaseId}/assets{?name,label}`;
 const uploadGHActionsTestUrl = `https://uploads.github.com/repos/electron/test-releases/releases/${releaseId}/assets{?name,label}`;
 const uploadUrl = isGHActions ? uploadGHActionsTestUrl : uploadDefaultUrl;
