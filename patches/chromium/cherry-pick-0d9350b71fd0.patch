@@ -41,7 +41,7 @@ Cr-Commit-Position: refs/branch-heads/6367@{#667}
 Cr-Branched-From: d158c6dc6e3604e6f899041972edf26087a49740-refs/heads/main@{#1274542}
 
 diff --git a/third_party/blink/renderer/core/typed_arrays/dom_array_buffer.cc b/third_party/blink/renderer/core/typed_arrays/dom_array_buffer.cc
-index 69060a1e5f6937896d385b5ceb70f2d49ef8669c..44898805c8c43f1f09a193e3533a6efb71a97462 100644
+index 69060a1e5f6937896d385b5ceb70f2d49ef8669c..4488fd76165b46306009ad02fba30de2953981ce 100644
 --- a/third_party/blink/renderer/core/typed_arrays/dom_array_buffer.cc
 +++ b/third_party/blink/renderer/core/typed_arrays/dom_array_buffer.cc
 @@ -46,8 +46,17 @@ const WrapperTypeInfo& DOMArrayBuffer::wrapper_type_info_ =
